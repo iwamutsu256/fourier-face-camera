@@ -26,10 +26,10 @@ class FourierFaceCamera:
 
     def _prepare_model(self):
         """人物切り抜き用モデル（Selfie Segmenter）をダウンロード"""
-        model_path = 'selfie_segmenter.task'
+        model_path = 'selfie_segmenter.tflite'
         if not os.path.exists(model_path):
             print("[INFO] Downloading Selfie Segmenter model. Please wait...")
-            url = "https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/latest/selfie_segmenter.task"
+            url = "https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/latest/selfie_segmenter.tflite"
             urllib.request.urlretrieve(url, model_path)
             print("[INFO] Model download complete.")
         self.model_path = model_path
