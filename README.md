@@ -3,7 +3,7 @@
 リアルタイムのWebカメラ映像から**「人物だけをAIで切り抜き、眼鏡や服のシワを含むその人自身の見た目のエッジ」**を抽出し、**離散フーリエ変換 (FFT)** を用いて一筆書きのような滑らかなジェネラティブアート線画に変換します。
 さらに、生成されたアート映像を仮想カメラとして出力し、ZoomやGoogle MeetなどのWeb会議で利用可能にするインタラクティブ・エンジニアリング・プロジェクトです。
 
-![Demo GIF](https://github.com/user-attachments/assets/89f63979-8d18-43d0-8a88-9d97c644aa68)
+![Demo GIF](https://github.com/user-attachments/assets/f0176be2-33f7-47f1-964b-88af3e16a97c)
 
 ## ✨ Core Features
 
@@ -26,7 +26,7 @@
 1. リポジトリをクローンします。
 
 ```bash
-git clone [https://github.com/your-username/fourier-face-camera.git](https://github.com/your-username/fourier-face-camera.git)
+git clone https://github.com/iwamutsu256/fourier-face-camera.git
 cd fourier-face-camera
 ```
 
