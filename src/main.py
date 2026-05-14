@@ -8,207 +8,163 @@ import os
 
 class FourierFaceCamera:
     """
-    リアルタイム映像を取得し、フーリエ変換によるエフェクトをかけて仮想カメラに出力するクラス
+    人物を切り抜き、見た目（眼鏡やマスク含む）のエッジをフーリエ線画に変換するクラス
     """
     def __init__(self, camera_id: int = 0):
-        # cv2.VideoCaptureはOSのカメラAPIを叩き、デバイスと接続するクラス
         self.cap = cv2.VideoCapture(camera_id)
-        
         if not self.cap.isOpened():
             raise RuntimeError(f"カメラ (ID: {camera_id}) にアクセスできません。")
             
-        # 1. モデルの準備と初期化
         self._prepare_model()
-        self._init_face_landmarker()
+        self._init_segmenter()
 
-        # 2. 顔の輪郭（Face Oval）のエッジ定義をハードコード
-        # API変更で定数が消えても動くように、不変の接続インデックスを直接指定
-        face_oval_edges = [
-            (10, 338), (338, 297), (297, 332), (332, 284), (284, 251),
-            (251, 389), (389, 356), (356, 454), (454, 323), (323, 361),
-            (361, 288), (288, 397), (397, 365), (365, 379), (379, 378),
-            (378, 400), (400, 377), (377, 152), (152, 148), (148, 176),
-            (176, 149), (149, 150), (150, 136), (136, 172), (172, 58),
-            (58, 132), (132, 93), (93, 234), (234, 127), (127, 162),
-            (162, 21), (21, 54), (54, 103), (103, 67), (67, 109), (109, 10)
-        ]
-        
-        # エッジの集合を一筆書きの頂点リストに変換
-        self.contour_indices = self._get_continuous_contour(face_oval_edges)
-
-        # [新規追加] フーリエ変換で残す波の数（少ないほど丸くなり、多いほど元の顔に近づく）
+        # フーリエ変換で残す波の数（少ないほど丸くなる）
         self.num_frequencies = 10
+        # Cannyエッジ検出の感度（低いほど細かい線を拾う）
+        self.edge_threshold1 = 50
+        self.edge_threshold2 = 150
 
-        print(f"[INFO] Contour initialized with {len(self.contour_indices)} points.")
-    
     def _prepare_model(self):
-        """MediaPipeの推論モデル(.task)が存在しない場合は自動ダウンロードする"""
-        model_path = 'face_landmarker.task'
+        """人物切り抜き用モデル（Selfie Segmenter）をダウンロード"""
+        model_path = 'selfie_segmenter.tflite'
         if not os.path.exists(model_path):
-            print("[INFO] Downloading FaceLandmarker model. Please wait...")
-            url = "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task"
+            print("[INFO] Downloading Selfie Segmenter model. Please wait...")
+            url = "https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/latest/selfie_segmenter.tflite"
             urllib.request.urlretrieve(url, model_path)
             print("[INFO] Model download complete.")
         self.model_path = model_path
 
-    def _init_face_landmarker(self):
-        """Tasks APIを用いたFaceLandmarkerの初期化"""
+    def _init_segmenter(self):
+        """ImageSegmenterの初期化"""
         base_options = python.BaseOptions(model_asset_path=self.model_path)
-        options = vision.FaceLandmarkerOptions(
+        options = vision.ImageSegmenterOptions(
             base_options=base_options,
-            num_faces=1,
-            output_face_blendshapes=False,
-            output_facial_transformation_matrixes=False,
-            min_face_detection_confidence=0.2,
-            min_face_presence_confidence=0.2,
-            min_tracking_confidence=0.2
+            output_category_mask=True
         )
-        self.detector = vision.FaceLandmarker.create_from_options(options)
+        self.segmenter = vision.ImageSegmenter.create_from_options(options)
 
-    def _get_continuous_contour(self, edge_list: list) -> list[int]:
-        """
-        エッジの集合 (start, end) から、一筆書きになるように頂点インデックスを並び替える。
-        アルゴリズム的には、次数2のグラフの辺を辿ってパスを構築する処理。
-        """
-        conn_list = edge_list.copy()
-        if not conn_list:
-            return []
-
-        # 最初の辺を起点にする
-        ordered_nodes = []
-        current_edge = conn_list.pop(0)
-        ordered_nodes.extend([current_edge[0], current_edge[1]])
-
-        # 繋がる辺を探してリストを成長させる
-        while conn_list:
-            last_node = ordered_nodes[-1]
-            found = False
-            for i, edge in enumerate(conn_list):
-                if edge[0] == last_node:
-                    ordered_nodes.append(edge[1])
-                    conn_list.pop(i)
-                    found = True
-                    break
-                elif edge[1] == last_node:
-                    ordered_nodes.append(edge[0])
-                    conn_list.pop(i)
-                    found = True
-                    break
-            
-            # もし途切れた場合（通常は閉路なので起きないが安全のため）
-            if not found:
-                break
-                
-        return ordered_nodes
-
-    # ---------------------------------------------------------
-    # [新規追加] フーリエ変換による平滑化処理
-    # ---------------------------------------------------------
     def _apply_fourier_smoothing(self, points: np.ndarray, num_freqs: int) -> np.ndarray:
-        """点群(x, y)を複素数化してFFTをかけ、高周波をカットしてIFFTで戻す"""
+        """点群(x, y)を複素数化してFFTをかけ、高周波をカットしてIFFTで戻す（変更なし！）"""
         if len(points) <= num_freqs:
             return points
 
-        # 1. 座標を複素数 (x + iy) に変換
         complex_pts = points[:, 0] + 1j * points[:, 1]
-        
-        # 2. 高速フーリエ変換 (FFT)
         fft_coeffs = np.fft.fft(complex_pts)
-        
-        # 3. 高周波成分を除去する（ゼロ埋めした配列を用意）
         fft_coeffs_filtered = np.zeros_like(fft_coeffs)
         
-        # 低周波成分（前半部分と後半部分）だけを元の係数からコピーして残す
         half = num_freqs // 2
         fft_coeffs_filtered[:half] = fft_coeffs[:half]
         fft_coeffs_filtered[-half:] = fft_coeffs[-half:]
         
-        # 4. 逆高速フーリエ変換 (IFFT) で座標空間に戻す
         smoothed_complex = np.fft.ifft(fft_coeffs_filtered)
-        
-        # 5. 実部と虚部を分離して (x, y) の配列に再構築
         smoothed_points = np.column_stack((np.real(smoothed_complex), np.imag(smoothed_complex)))
         return smoothed_points.astype(np.int32)
 
     def run(self) -> None:
-        """
-        メイン処理ループ
-        """
         print("[INFO] Starting main loop. Press 'q' to exit.")
-        # [新規追加] より滑らかな曲線を描くために、描画用の黒いキャンバスを用意する設定
         drawing_mode = False
+        show_mask_mode = False 
+
         while True:
-            # ret: フレームの取得に成功したか (bool)
-            # frame: 取得した画像データ (np.ndarray)
             ret, frame = self.cap.read()
-            if not ret:
-                print("[ERROR] Failed to grab frame.")
-                break
+            if not ret: break
             h, w, _ = frame.shape
 
-            # カメラ映像をそのまま出すか、黒背景にするか
             display_frame = np.zeros((h, w, 3), dtype=np.uint8) if drawing_mode else frame.copy()
 
-            # 1. BGRからRGBへの変換（MediaPipeの入力要件）
+            # 1. 人物のセグメンテーション
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-
             mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
-
-            # 2. 推論の実行
-            detection_result = self.detector.detect(mp_image)
-
-
-            # 3. ランドマークが検出された場合の処理
-            if detection_result.face_landmarks:
-                # 最初の顔のランドマークを取得
-                landmarks = detection_result.face_landmarks[0]
-                
-                # 一筆書き順に座標を取得し、ピクセル空間にマッピング
-                contour_points = []
-                for idx in self.contour_indices:
-                    landmark = landmarks[idx]
-                    # 正規化座標 (0.0~1.0) を実ピクセルに変換
-                    px = int(landmark.x * w)
-                    py = int(landmark.y * h)
-                    contour_points.append([px, py])
-                
-                # 生の点群配列
-                pts_raw = np.array(contour_points, np.int32)
-                
-                # [新規追加] フーリエ変換による平滑化点群の生成
-                pts_smooth = self._apply_fourier_smoothing(pts_raw, self.num_frequencies)
-                pts_smooth = pts_smooth.reshape((-1, 1, 2))
-                pts_raw = pts_raw.reshape((-1, 1, 2))
-
-                # 描画：生の輪郭（薄い赤）と フーリエ近似線（太いシアン）
-                cv2.polylines(display_frame, [pts_raw], True, (0, 0, 255), 1, lineType=cv2.LINE_AA)
-                cv2.polylines(display_frame, [pts_smooth], True, (255, 255, 0), 3, lineType=cv2.LINE_AA)
+            segmentation_result = self.segmenter.segment(mp_image)
             
-            cv2.putText(display_frame, f"Fourier Freqs: {self.num_frequencies}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
-            cv2.putText(display_frame, "Press 'UP/DOWN' to change freqs, 'd' to toggle background", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+            category_mask = segmentation_result.category_mask.numpy_view()
+            person_mask = (category_mask == 0).astype(np.uint8) * 255
 
-            # 画面への表示
-            cv2.imshow("Fourier Face Camera", display_frame)
+            # ---------------------------------------------------------
+            # [進化ポイント1] 完璧な外枠（シルエット）の抽出
+            # ---------------------------------------------------------
+            # 収縮させる前のマスクから、一番外側の輪郭（RETR_EXTERNAL）を取得する
+            silhouette_contours, _ = cv2.findContours(person_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+            # 最も長い1本（人物の大枠）だけを取得
+            silhouette_contours = sorted(silhouette_contours, key=len, reverse=True)[:1]
 
-            # 1ミリ秒キー入力を待ち、'q'が押されたらループを抜ける
+            # ---------------------------------------------------------
+            # [進化ポイント2] 内部ディテールのノイズ除去と結合
+            # ---------------------------------------------------------
+            # マスクの収縮（背景ノイズを削る用）
+            kernel = np.ones((5, 5), np.uint8)
+            strict_person_mask = cv2.erode(person_mask, kernel, iterations=2)
+
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            # ガウシアンブラーで微細なテクスチャ（毛穴や服の繊維）を消す
+            blurred_gray = cv2.GaussianBlur(gray, (5, 5), 0)
+
+            # エッジ検出
+            full_edges = cv2.Canny(blurred_gray, self.edge_threshold1, self.edge_threshold2)
+
+            # クロージング処理で、途切れた線をくっつける（糊付け）
+            close_kernel = np.ones((3, 3), np.uint8)
+            full_edges = cv2.morphologyEx(full_edges, cv2.MORPH_CLOSE, close_kernel)
+
+            # 人物の内側のエッジだけを残す
+            person_edges = cv2.bitwise_and(full_edges, full_edges, mask=strict_person_mask)
+
+            # 内部の輪郭抽出
+            inner_contours, _ = cv2.findContours(person_edges, cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE)
+            # 短いゴミを無視し、上位15本ほどの「意味のある長い線」だけを取得
+            inner_contours = sorted(inner_contours, key=len, reverse=True)[:15]
+
+            # ---------------------------------------------------------
+            # [進化ポイント3] 描画処理の共通化と美化
+            # ---------------------------------------------------------
+            def draw_fourier_lines(contour_list, is_closed, smooth_thickness):
+                """フーリエ平滑化と描画を行うローカル関数"""
+                for contour in contour_list:
+                    pts_raw = contour.reshape(-1, 2)
+                    if len(pts_raw) < max(self.num_frequencies, 4): continue
+                    pts_smooth = self._apply_fourier_smoothing(pts_raw, self.num_frequencies)
+                    
+                    pts_raw_re = pts_raw.reshape((-1, 1, 2))
+                    pts_smooth_re = pts_smooth.reshape((-1, 1, 2))
+                    
+                    # 元の線を細い赤で、フーリエ線を太い水色で描画
+                    cv2.polylines(display_frame, [pts_raw_re], isClosed=is_closed, color=(0, 0, 255), thickness=1, lineType=cv2.LINE_AA)
+                    cv2.polylines(display_frame, [pts_smooth_re], isClosed=is_closed, color=(255, 255, 0), thickness=smooth_thickness, lineType=cv2.LINE_AA)
+
+            # シルエットは「閉じた線(True)」で「太く(3)」描く
+            draw_fourier_lines(silhouette_contours, is_closed=True, smooth_thickness=3)
+            # 内部のディテールは「開いた線(False)」で「少し細く(2)」描く
+            draw_fourier_lines(inner_contours, is_closed=False, smooth_thickness=2)
+
+            # UI表示
+            cv2.putText(display_frame, f"Freqs: {self.num_frequencies} | Canny: {self.edge_threshold1}-{self.edge_threshold2}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+            cv2.putText(display_frame, "UP/DOWN: Freqs | L/R: Edge | 'd': Bg | 'm': Mask", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+
+            if show_mask_mode:
+                mask_bgr = cv2.cvtColor(strict_person_mask, cv2.COLOR_GRAY2BGR)
+                cv2.putText(mask_bgr, "DEBUG: Mask Mode (Press 'm' to switch)", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                cv2.imshow("Fourier Face Camera", mask_bgr)
+            else:
+                cv2.imshow("Fourier Face Camera", display_frame)
+
             key = cv2.waitKey(1) & 0xFF
-            if key == ord('q'):
-                break
-            elif key == ord('d'): # 背景切り替え
-                drawing_mode = not drawing_mode
-            elif key == 0: # 上矢印キー（OpenCVの環境によっては 82）
-                self.num_frequencies = min(self.num_frequencies + 2, len(self.contour_indices))
-            elif key == 1: # 下矢印キー（OpenCVの環境によっては 84）
-                self.num_frequencies = max(self.num_frequencies - 2, 2)
+            if key == ord('q'): break
+            elif key == ord('d'): drawing_mode = not drawing_mode
+            elif key == ord('m'): show_mask_mode = not show_mask_mode
+            elif key == 0: self.num_frequencies = min(self.num_frequencies + 5, 300)
+            elif key == 1: self.num_frequencies = max(self.num_frequencies - 5, 2)
+            elif key == 2: 
+                self.edge_threshold1 = min(self.edge_threshold1 + 10, 200)
+                self.edge_threshold2 = min(self.edge_threshold2 + 10, 300)
+            elif key == 3: 
+                self.edge_threshold1 = max(self.edge_threshold1 - 10, 10)
+                self.edge_threshold2 = max(self.edge_threshold2 - 10, 50)
 
         self.cleanup()
 
     def cleanup(self) -> None:
-        """
-        リソースの解放
-        """
         self.cap.release()
-        self.detector.close()
+        self.segmenter.close()
         cv2.destroyAllWindows()
         print("[INFO] Camera released and windows destroyed.")
 
