@@ -180,15 +180,15 @@ class FourierFaceCamera:
                 pts_smooth = pts_smooth.reshape((-1, 1, 2))
                 pts_raw = pts_raw.reshape((-1, 1, 2))
 
-            # 描画：生の輪郭（薄い赤）と フーリエ近似線（太いシアン）
-            cv2.polylines(display_frame, [pts_raw], True, (0, 0, 255), 1, lineType=cv2.LINE_AA)
-            cv2.polylines(display_frame, [pts_smooth], True, (255, 255, 0), 3, lineType=cv2.LINE_AA)
+                # 描画：生の輪郭（薄い赤）と フーリエ近似線（太いシアン）
+                cv2.polylines(display_frame, [pts_raw], True, (0, 0, 255), 1, lineType=cv2.LINE_AA)
+                cv2.polylines(display_frame, [pts_smooth], True, (255, 255, 0), 3, lineType=cv2.LINE_AA)
             
             cv2.putText(display_frame, f"Fourier Freqs: {self.num_frequencies}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
             cv2.putText(display_frame, "Press 'UP/DOWN' to change freqs, 'd' to toggle background", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
 
             # 画面への表示
-            cv2.imshow("Fourier Face Camera", frame)
+            cv2.imshow("Fourier Face Camera", display_frame)
 
             # 1ミリ秒キー入力を待ち、'q'が押されたらループを抜ける
             key = cv2.waitKey(1) & 0xFF
