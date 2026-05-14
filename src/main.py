@@ -35,6 +35,10 @@ class FourierFaceCamera:
         
         # エッジの集合を一筆書きの頂点リストに変換
         self.contour_indices = self._get_continuous_contour(face_oval_edges)
+
+        # [新規追加] フーリエ変換で残す波の数（少ないほど丸くなり、多いほど元の顔に近づく）
+        self.num_frequencies = 10
+
         print(f"[INFO] Contour initialized with {len(self.contour_indices)} points.")
     
     def _prepare_model(self):
@@ -54,7 +58,10 @@ class FourierFaceCamera:
             base_options=base_options,
             num_faces=1,
             output_face_blendshapes=False,
-            output_facial_transformation_matrixes=False
+            output_facial_transformation_matrixes=False,
+            min_face_detection_confidence=0.2,
+            min_face_presence_confidence=0.2,
+            min_tracking_confidence=0.2
         )
         self.detector = vision.FaceLandmarker.create_from_options(options)
 
@@ -94,11 +101,42 @@ class FourierFaceCamera:
                 
         return ordered_nodes
 
+    # ---------------------------------------------------------
+    # [新規追加] フーリエ変換による平滑化処理
+    # ---------------------------------------------------------
+    def _apply_fourier_smoothing(self, points: np.ndarray, num_freqs: int) -> np.ndarray:
+        """点群(x, y)を複素数化してFFTをかけ、高周波をカットしてIFFTで戻す"""
+        if len(points) <= num_freqs:
+            return points
+
+        # 1. 座標を複素数 (x + iy) に変換
+        complex_pts = points[:, 0] + 1j * points[:, 1]
+        
+        # 2. 高速フーリエ変換 (FFT)
+        fft_coeffs = np.fft.fft(complex_pts)
+        
+        # 3. 高周波成分を除去する（ゼロ埋めした配列を用意）
+        fft_coeffs_filtered = np.zeros_like(fft_coeffs)
+        
+        # 低周波成分（前半部分と後半部分）だけを元の係数からコピーして残す
+        half = num_freqs // 2
+        fft_coeffs_filtered[:half] = fft_coeffs[:half]
+        fft_coeffs_filtered[-half:] = fft_coeffs[-half:]
+        
+        # 4. 逆高速フーリエ変換 (IFFT) で座標空間に戻す
+        smoothed_complex = np.fft.ifft(fft_coeffs_filtered)
+        
+        # 5. 実部と虚部を分離して (x, y) の配列に再構築
+        smoothed_points = np.column_stack((np.real(smoothed_complex), np.imag(smoothed_complex)))
+        return smoothed_points.astype(np.int32)
+
     def run(self) -> None:
         """
         メイン処理ループ
         """
         print("[INFO] Starting main loop. Press 'q' to exit.")
+        # [新規追加] より滑らかな曲線を描くために、描画用の黒いキャンバスを用意する設定
+        drawing_mode = False
         while True:
             # ret: フレームの取得に成功したか (bool)
             # frame: 取得した画像データ (np.ndarray)
@@ -106,6 +144,10 @@ class FourierFaceCamera:
             if not ret:
                 print("[ERROR] Failed to grab frame.")
                 break
+            h, w, _ = frame.shape
+
+            # カメラ映像をそのまま出すか、黒背景にするか
+            display_frame = np.zeros((h, w, 3), dtype=np.uint8) if drawing_mode else frame.copy()
 
             # 1. BGRからRGBへの変換（MediaPipeの入力要件）
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -115,7 +157,6 @@ class FourierFaceCamera:
             # 2. 推論の実行
             detection_result = self.detector.detect(mp_image)
 
-            h, w, _ = frame.shape
 
             # 3. ランドマークが検出された場合の処理
             if detection_result.face_landmarks:
@@ -131,30 +172,34 @@ class FourierFaceCamera:
                     py = int(landmark.y * h)
                     contour_points.append([px, py])
                 
-                # NumPy配列に変換 (OpenCVで描画可能な int32 型の (N, 1, 2) 形状にする)
-                pts = np.array(contour_points, np.int32)
-                pts = pts.reshape((-1, 1, 2))
-
-                # [学習用デバッグ表示] 輪郭を線で結んで描画
-                cv2.polylines(frame, [pts], isClosed=True, color=(0, 255, 0), thickness=2)
+                # 生の点群配列
+                pts_raw = np.array(contour_points, np.int32)
                 
-                # [学習用デバッグ表示] 頂点数などの情報
-                cv2.putText(
-                    frame, 
-                    f"Contour Points: {len(pts)}", 
-                    (10, 30), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 
-                    0.7, 
-                    (0, 255, 0), 
-                    2
-                )
+                # [新規追加] フーリエ変換による平滑化点群の生成
+                pts_smooth = self._apply_fourier_smoothing(pts_raw, self.num_frequencies)
+                pts_smooth = pts_smooth.reshape((-1, 1, 2))
+                pts_raw = pts_raw.reshape((-1, 1, 2))
+
+                # 描画：生の輪郭（薄い赤）と フーリエ近似線（太いシアン）
+                cv2.polylines(display_frame, [pts_raw], True, (0, 0, 255), 1, lineType=cv2.LINE_AA)
+                cv2.polylines(display_frame, [pts_smooth], True, (255, 255, 0), 3, lineType=cv2.LINE_AA)
+            
+            cv2.putText(display_frame, f"Fourier Freqs: {self.num_frequencies}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
+            cv2.putText(display_frame, "Press 'UP/DOWN' to change freqs, 'd' to toggle background", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
 
             # 画面への表示
-            cv2.imshow("Fourier Face Camera", frame)
+            cv2.imshow("Fourier Face Camera", display_frame)
 
             # 1ミリ秒キー入力を待ち、'q'が押されたらループを抜ける
-            if cv2.waitKey(1) & 0xFF == ord('q'):
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord('q'):
                 break
+            elif key == ord('d'): # 背景切り替え
+                drawing_mode = not drawing_mode
+            elif key == 0: # 上矢印キー（OpenCVの環境によっては 82）
+                self.num_frequencies = min(self.num_frequencies + 2, len(self.contour_indices))
+            elif key == 1: # 下矢印キー（OpenCVの環境によっては 84）
+                self.num_frequencies = max(self.num_frequencies - 2, 2)
 
         self.cleanup()
 
