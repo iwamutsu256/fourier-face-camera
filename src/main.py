@@ -1,5 +1,3 @@
-import numpy as np
-
 from capture.camera import (
     get_capture_fps,
     get_frame_size,
@@ -9,16 +7,9 @@ from capture.camera import (
 )
 from config import settings
 from display.window import destroy_monitor_windows, show_monitor_window
-from edge.sketch import (
-    create_strict_person_mask,
-    extract_person_mask,
-    extract_sketch_edges,
-    find_inner_contours,
-    find_silhouette_contours,
-)
-from render.drawing import draw_fourier_lines
+from pipeline.frame import process_frame
 from segmentation.model import prepare_model
-from segmentation.selfie import create_selfie_segmenter, extract_category_mask
+from segmentation.selfie import create_selfie_segmenter
 from virtual_camera.output import create_virtual_camera, send_frame
 
 class FourierFaceCamera:
@@ -93,30 +84,14 @@ class FourierFaceCamera:
                 if not ret:
                     break
 
-                display_frame = np.zeros((height, width, 3), dtype=np.uint8)
-
-                category_mask = extract_category_mask(frame, self.segmenter)
-                person_mask = extract_person_mask(category_mask)
-                silhouette_contours = find_silhouette_contours(person_mask)
-                strict_person_mask = create_strict_person_mask(person_mask)
-                full_edges = extract_sketch_edges(frame, self.sketch_threshold)
-                inner_contours = find_inner_contours(full_edges, strict_person_mask)
-
-                draw_fourier_lines(
-                    display_frame,
-                    silhouette_contours,
+                display_frame = process_frame(
+                    frame,
+                    self.segmenter,
+                    width,
+                    height,
+                    self.sketch_threshold,
                     self.num_frequencies,
                     self.line_color_bgr,
-                    is_closed=True,
-                    line_thickness=settings.SILHOUETTE_LINE_THICKNESS,
-                )
-                draw_fourier_lines(
-                    display_frame,
-                    inner_contours,
-                    self.num_frequencies,
-                    self.line_color_bgr,
-                    is_closed=False,
-                    line_thickness=settings.INNER_LINE_THICKNESS,
                 )
 
                 send_frame(cam, display_frame)
