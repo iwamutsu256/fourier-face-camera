@@ -8,6 +8,14 @@ import os
 import pyvirtualcam
 
 from config import settings
+from edge.sketch import (
+    create_strict_person_mask,
+    extract_person_mask,
+    extract_sketch_edges,
+    find_inner_contours,
+    find_silhouette_contours,
+)
+from render.drawing import draw_fourier_lines
 
 class FourierFaceCamera:
     """
@@ -92,34 +100,6 @@ class FourierFaceCamera:
         )
         self.segmenter = vision.ImageSegmenter.create_from_options(options)
 
-    def _apply_fourier_smoothing(self, points: np.ndarray, num_freqs: int) -> np.ndarray:
-        """
-        輪郭点をフーリエ変換で平滑化する。
-
-        Args:
-            points:
-                輪郭点列
-            num_freqs:
-                残す周波数成分数
-
-        Returns:
-            平滑化後の輪郭点
-
-        Side Effects:
-            なし
-        """
-        if len(points) <= num_freqs:
-            return points
-        complex_pts = points[:, 0] + 1j * points[:, 1]
-        fft_coeffs = np.fft.fft(complex_pts)
-        fft_coeffs_filtered = np.zeros_like(fft_coeffs)
-        half = num_freqs // 2
-        fft_coeffs_filtered[:half] = fft_coeffs[:half]
-        fft_coeffs_filtered[-half:] = fft_coeffs[-half:]
-        smoothed_complex = np.fft.ifft(fft_coeffs_filtered)
-        smoothed_points = np.column_stack((np.real(smoothed_complex), np.imag(smoothed_complex)))
-        return smoothed_points.astype(np.int32)
-
     def run(self) -> None:
         """
         カメラ映像を線画化し、仮想カメラへ送信する。
@@ -160,103 +140,27 @@ class FourierFaceCamera:
                 mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
                 segmentation_result = self.segmenter.segment(mp_image)
                 category_mask = segmentation_result.category_mask.numpy_view()
-                person_mask = (category_mask == 0).astype(np.uint8) * 255
-
-                silhouette_contours, _ = cv2.findContours(person_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
-                silhouette_contours = sorted(silhouette_contours, key=len, reverse=True)[:1]
-
-                kernel = np.ones(settings.ERODE_KERNEL_SIZE, np.uint8)
-                strict_person_mask = cv2.erode(
-                    person_mask,
-                    kernel,
-                    iterations=settings.ERODE_ITERATIONS,
-                )
-
-                # ---------------------------------------------------------
-                # [完全新規] あなたのアイデアを再現した「覆い焼きカラー」線画抽出
-                # ---------------------------------------------------------
-                # ① 白黒に変換
-                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                
-                # ② 画像を反転
-                inv_gray = cv2.bitwise_not(gray)
-                
-                # ③ 反転画像を大きくぼかす
-                blurred = cv2.GaussianBlur(inv_gray, settings.GAUSSIAN_BLUR_KERNEL_SIZE, 0)
-                
-                # ④ 元のグレースケールと、ぼかした反転画像を「覆い焼きカラー」でブレンド
-                # (スケッチのような白背景に黒い陰影の画像になる)
-                sketch = cv2.divide(
-                    gray,
-                    settings.SKETCH_MAX_VALUE - blurred,
-                    scale=settings.SKETCH_DIVIDE_SCALE,
-                )
-                
-                # ⑤ 白黒を再反転（黒背景に白い線にする）
-                sketch_inv = cv2.bitwise_not(sketch)
-                
-                # ⑥ 閾値を設定して線を濃くする（薄いノイズを消す）
-                _, binary_sketch = cv2.threshold(
-                    sketch_inv,
-                    self.sketch_threshold,
-                    settings.SKETCH_MAX_VALUE,
-                    cv2.THRESH_BINARY,
-                )
-                
-                # ⑦ 抽出された「太い線」から、findContoursに通すための「1ピクセルの輪郭」を抽出
-                full_edges = cv2.Canny(
-                    binary_sketch,
-                    settings.CANNY_LOW_THRESHOLD,
-                    settings.CANNY_HIGH_THRESHOLD,
-                )
-
-                # 途切れた線を糊付け
-                close_kernel = np.ones(settings.CLOSE_KERNEL_SIZE, np.uint8)
-                full_edges = cv2.morphologyEx(full_edges, cv2.MORPH_CLOSE, close_kernel)
-                # ---------------------------------------------------------
-
-                # マスクで人物の内側だけに限定
-                person_edges = cv2.bitwise_and(full_edges, full_edges, mask=strict_person_mask)
-                inner_contours, _ = cv2.findContours(person_edges, cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE)
-                inner_contours = sorted(inner_contours, key=len, reverse=True)[:settings.MAX_INNER_CONTOURS]
-
-                # 描画処理
-                def draw_fourier_lines(contour_list, is_closed, smooth_thickness):
-                    """
-                    輪郭点列をフーリエ平滑化して描画する。
-
-                    Args:
-                        contour_list:
-                            描画対象の輪郭リスト
-                        is_closed:
-                            閉じた線として描画するかどうか
-                        smooth_thickness:
-                            描画する線の太さ
-
-                    Returns:
-                        なし
-
-                    Side Effects:
-                        display_frame に線を描画する。
-                    """
-                    for contour in contour_list:
-                        pts_raw = contour.reshape(-1, 2)
-                        if len(pts_raw) < max(self.num_frequencies, settings.MIN_CONTOUR_POINTS):
-                            continue
-
-                        pts_smooth = self._apply_fourier_smoothing(pts_raw, self.num_frequencies)
-                        pts_smooth_re = pts_smooth.reshape((-1, 1, 2))
-                        cv2.polylines(display_frame, [pts_smooth_re], isClosed=is_closed, color=self.line_color_bgr, thickness=smooth_thickness, lineType=cv2.LINE_AA)
+                person_mask = extract_person_mask(category_mask)
+                silhouette_contours = find_silhouette_contours(person_mask)
+                strict_person_mask = create_strict_person_mask(person_mask)
+                full_edges = extract_sketch_edges(frame, self.sketch_threshold)
+                inner_contours = find_inner_contours(full_edges, strict_person_mask)
 
                 draw_fourier_lines(
+                    display_frame,
                     silhouette_contours,
+                    self.num_frequencies,
+                    self.line_color_bgr,
                     is_closed=True,
-                    smooth_thickness=settings.SILHOUETTE_LINE_THICKNESS,
+                    line_thickness=settings.SILHOUETTE_LINE_THICKNESS,
                 )
                 draw_fourier_lines(
+                    display_frame,
                     inner_contours,
+                    self.num_frequencies,
+                    self.line_color_bgr,
                     is_closed=False,
-                    smooth_thickness=settings.INNER_LINE_THICKNESS,
+                    line_thickness=settings.INNER_LINE_THICKNESS,
                 )
 
                 out_frame_rgb = cv2.cvtColor(display_frame, cv2.COLOR_BGR2RGB)
