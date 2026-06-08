@@ -1,10 +1,5 @@
 import cv2
 import numpy as np
-import mediapipe as mp
-from mediapipe.tasks import python
-from mediapipe.tasks.python import vision
-import urllib.request
-import os
 import pyvirtualcam
 
 from config import settings
@@ -16,6 +11,8 @@ from edge.sketch import (
     find_silhouette_contours,
 )
 from render.drawing import draw_fourier_lines
+from segmentation.model import prepare_model
+from segmentation.selfie import create_selfie_segmenter, extract_category_mask
 
 class FourierFaceCamera:
     """
@@ -50,8 +47,8 @@ class FourierFaceCamera:
         if not self.cap.isOpened():
             raise RuntimeError(f"カメラ (ID: {camera_id}) にアクセスできません。")
             
-        self._prepare_model()
-        self._init_segmenter()
+        self.model_path = prepare_model()
+        self.segmenter = create_selfie_segmenter(self.model_path)
 
         # 本番仕様のパラメーター
         self.num_frequencies = settings.DEFAULT_NUM_FREQUENCIES
@@ -59,46 +56,6 @@ class FourierFaceCamera:
         
         self.line_color_bgr = (line_color_rgb[2], line_color_rgb[1], line_color_rgb[0])
         print(f"[INFO] Initialized with sketch threshold: {self.sketch_threshold}")
-
-    def _prepare_model(self):
-        """
-        セグメンテーションモデルを準備する。
-
-        Args:
-            なし
-
-        Returns:
-            なし
-
-        Side Effects:
-            モデルファイルが存在しない場合はダウンロードする。
-        """
-        model_path = settings.SELFIE_SEGMENTER_MODEL_PATH
-        if not os.path.exists(model_path):
-            print("[INFO] Downloading Selfie Segmenter model. Please wait...")
-            urllib.request.urlretrieve(settings.SELFIE_SEGMENTER_MODEL_URL, model_path)
-            print("[INFO] Model download complete.")
-        self.model_path = model_path
-
-    def _init_segmenter(self):
-        """
-        MediaPipeの人物セグメンターを初期化する。
-
-        Args:
-            なし
-
-        Returns:
-            なし
-
-        Side Effects:
-            self.segmenter に ImageSegmenter を設定する。
-        """
-        base_options = python.BaseOptions(model_asset_path=self.model_path)
-        options = vision.ImageSegmenterOptions(
-            base_options=base_options,
-            output_category_mask=True
-        )
-        self.segmenter = vision.ImageSegmenter.create_from_options(options)
 
     def run(self) -> None:
         """
@@ -135,11 +92,7 @@ class FourierFaceCamera:
 
                 display_frame = np.zeros((h, w, 3), dtype=np.uint8)
 
-                # 1. 人物のセグメンテーション（外枠用）
-                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
-                segmentation_result = self.segmenter.segment(mp_image)
-                category_mask = segmentation_result.category_mask.numpy_view()
+                category_mask = extract_category_mask(frame, self.segmenter)
                 person_mask = extract_person_mask(category_mask)
                 silhouette_contours = find_silhouette_contours(person_mask)
                 strict_person_mask = create_strict_person_mask(person_mask)
