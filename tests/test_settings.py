@@ -58,6 +58,62 @@ class SettingsTest(unittest.TestCase):
         self.assertEqual(1, blur_width % 2)
         self.assertEqual(1, blur_height % 2)
 
+    def test_lighting_preprocess_settings_are_valid(self):
+        """
+        照明補正用の設定値がOpenCVに渡せる範囲であることを確認する。
+
+        Args:
+            なし
+
+        Returns:
+            なし
+
+        Side Effects:
+            なし
+        """
+        tile_width, tile_height = settings.CLAHE_TILE_GRID_SIZE
+        self.assertGreater(settings.CLAHE_CLIP_LIMIT, 0)
+        self.assertGreater(tile_width, 0)
+        self.assertGreater(tile_height, 0)
+        self.assertGreater(settings.BILATERAL_FILTER_DIAMETER, 0)
+        self.assertGreater(settings.ADAPTIVE_THRESHOLD_BLOCK_SIZE, 1)
+        self.assertEqual(1, settings.ADAPTIVE_THRESHOLD_BLOCK_SIZE % 2)
+        self.assertGreater(settings.BINARY_DENOISE_MEDIAN_KERNEL_SIZE, 1)
+        self.assertEqual(1, settings.BINARY_DENOISE_MEDIAN_KERNEL_SIZE % 2)
+        binary_open_width, binary_open_height = settings.BINARY_OPEN_KERNEL_SIZE
+        self.assertGreater(binary_open_width, 0)
+        self.assertGreater(binary_open_height, 0)
+        self.assertGreaterEqual(settings.BINARY_OPEN_ITERATIONS, 0)
+        edge_blur_width, edge_blur_height = settings.EDGE_SOURCE_BLUR_KERNEL_SIZE
+        self.assertEqual(1, edge_blur_width % 2)
+        self.assertEqual(1, edge_blur_height % 2)
+        self.assertGreater(settings.CANNY_AUTO_SIGMA, 0)
+        self.assertLess(settings.CANNY_AUTO_SIGMA, 1)
+        self.assertGreater(settings.MIN_EDGE_COMPONENT_AREA, 0)
+        self.assertGreater(settings.MIN_EDGE_COMPONENT_SIZE, 0)
+        self.assertGreater(settings.TEMPORAL_EDGE_DECAY, 0)
+        self.assertLess(settings.TEMPORAL_EDGE_DECAY, 1)
+        self.assertGreater(settings.TEMPORAL_EDGE_THRESHOLD, 0)
+        self.assertLessEqual(settings.TEMPORAL_EDGE_THRESHOLD, settings.SKETCH_MAX_VALUE)
+        self.assertGreater(settings.MIN_INNER_CONTOUR_POINTS, 0)
+
+    def test_comparison_tile_size_is_valid(self):
+        """
+        比較モニターのタイルサイズが正の値であることを確認する。
+
+        Args:
+            なし
+
+        Returns:
+            なし
+
+        Side Effects:
+            なし
+        """
+        tile_width, tile_height = settings.COMPARISON_TILE_SIZE
+        self.assertGreater(tile_width, 0)
+        self.assertGreater(tile_height, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

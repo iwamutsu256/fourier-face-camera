@@ -135,3 +135,95 @@ def process_frame(
     )
 
     return display_frame
+
+
+def process_frame_with_debug(
+    frame: np.ndarray,
+    segmenter,
+    width: int,
+    height: int,
+    sketch_threshold: int,
+    num_frequencies: int,
+    line_color_bgr: tuple[int, int, int],
+    previous_edge_history: np.ndarray | None = None,
+) -> tuple[np.ndarray, dict[str, np.ndarray], np.ndarray]:
+    """
+    入力フレームから線画フレームと比較表示用の中間画像を生成する。
+
+    Args:
+        frame:
+            BGR形式の入力フレーム
+        segmenter:
+            初期化済みのセグメンター
+        width:
+            出力フレーム幅
+        height:
+            出力フレーム高さ
+        sketch_threshold:
+            スケッチ線を抽出する閾値
+        num_frequencies:
+            フーリエ平滑化で残す周波数成分数
+        line_color_bgr:
+            BGR形式の線色
+        previous_edge_history:
+            前フレームまでのエッジ履歴
+
+    Returns:
+        線画化したBGRフレーム、比較表示用の中間画像、エッジ履歴
+
+    Side Effects:
+        出力フレームへ線を描画する。
+    """
+    from edge.sketch import (
+        create_sketch_debug_images,
+        create_strict_person_mask,
+        extract_person_mask,
+        find_inner_contours,
+        find_silhouette_contours,
+        stabilize_edges_over_time,
+    )
+    from render.drawing import draw_fourier_lines
+    from segmentation.selfie import extract_category_mask
+
+    display_frame = create_blank_frame(width, height)
+
+    category_mask = extract_category_mask(frame, segmenter)
+    person_mask = extract_person_mask(category_mask)
+    silhouette_contours = find_silhouette_contours(person_mask)
+    strict_person_mask = create_strict_person_mask(person_mask)
+    sketch_debug_images = create_sketch_debug_images(frame, sketch_threshold)
+    stable_edges, edge_history = stabilize_edges_over_time(
+        sketch_debug_images["edges"],
+        previous_edge_history,
+    )
+    inner_contours = find_inner_contours(
+        stable_edges,
+        strict_person_mask,
+    )
+
+    draw_fourier_lines(
+        display_frame,
+        silhouette_contours,
+        num_frequencies,
+        line_color_bgr,
+        is_closed=True,
+        line_thickness=settings.SILHOUETTE_LINE_THICKNESS,
+    )
+    draw_fourier_lines(
+        display_frame,
+        inner_contours,
+        num_frequencies,
+        line_color_bgr,
+        is_closed=False,
+        line_thickness=settings.INNER_LINE_THICKNESS,
+    )
+
+    debug_frames = {
+        "camera": frame,
+        "mask": person_mask,
+        "preprocessed": sketch_debug_images["preprocessed"],
+        "soft": sketch_debug_images["soft"],
+        "edges": stable_edges,
+        "fourier": display_frame,
+    }
+    return display_frame, debug_frames, edge_history

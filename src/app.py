@@ -8,8 +8,12 @@ from capture.camera import (
     release_camera,
 )
 from config import settings
-from display.window import destroy_monitor_windows, show_monitor_window
-from pipeline.frame import process_frame
+from display.window import (
+    create_comparison_view,
+    destroy_monitor_windows,
+    show_monitor_window,
+)
+from pipeline.frame import process_frame, process_frame_with_debug
 from segmentation.model import prepare_model
 from segmentation.selfie import create_selfie_segmenter
 from virtual_camera.output import create_virtual_camera, send_frame
@@ -49,6 +53,7 @@ class FourierFaceCamera:
         self.num_frequencies = settings.DEFAULT_NUM_FREQUENCIES
         self.sketch_threshold = sketch_threshold
         self.line_color_bgr = (line_color_rgb[2], line_color_rgb[1], line_color_rgb[0])
+        self.edge_history = None
         print(f"[INFO] Initialized with sketch threshold: {self.sketch_threshold}")
 
     def run(self) -> None:
@@ -102,18 +107,37 @@ class FourierFaceCamera:
             if not ret:
                 break
 
-            display_frame = process_frame(
-                frame,
-                self.segmenter,
-                width,
-                height,
-                self.sketch_threshold,
-                self.num_frequencies,
-                self.line_color_bgr,
-            )
+            if settings.APP_SHOW_COMPARISON_MONITOR:
+                (
+                    display_frame,
+                    debug_frames,
+                    self.edge_history,
+                ) = process_frame_with_debug(
+                    frame,
+                    self.segmenter,
+                    width,
+                    height,
+                    self.sketch_threshold,
+                    self.num_frequencies,
+                    self.line_color_bgr,
+                    self.edge_history,
+                )
+                monitor_frame = create_comparison_view(debug_frames)
+            else:
+                display_frame = process_frame(
+                    frame,
+                    self.segmenter,
+                    width,
+                    height,
+                    self.sketch_threshold,
+                    self.num_frequencies,
+                    self.line_color_bgr,
+                )
+                monitor_frame = display_frame
+
             send_frame(cam, display_frame)
 
-            if show_monitor_window(display_frame):
+            if show_monitor_window(monitor_frame):
                 break
 
     def cleanup(self) -> None:
