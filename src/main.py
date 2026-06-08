@@ -1,8 +1,14 @@
-import cv2
 import numpy as np
-import pyvirtualcam
 
+from capture.camera import (
+    get_capture_fps,
+    get_frame_size,
+    open_camera,
+    read_frame,
+    release_camera,
+)
 from config import settings
+from display.window import destroy_monitor_windows, show_monitor_window
 from edge.sketch import (
     create_strict_person_mask,
     extract_person_mask,
@@ -13,6 +19,7 @@ from edge.sketch import (
 from render.drawing import draw_fourier_lines
 from segmentation.model import prepare_model
 from segmentation.selfie import create_selfie_segmenter, extract_category_mask
+from virtual_camera.output import create_virtual_camera, send_frame
 
 class FourierFaceCamera:
     """
@@ -43,9 +50,7 @@ class FourierFaceCamera:
         Side Effects:
             カメラとMediaPipeセグメンターを初期化する。
         """
-        self.cap = cv2.VideoCapture(camera_id)
-        if not self.cap.isOpened():
-            raise RuntimeError(f"カメラ (ID: {camera_id}) にアクセスできません。")
+        self.cap = open_camera(camera_id)
             
         self.model_path = prepare_model()
         self.segmenter = create_selfie_segmenter(self.model_path)
@@ -70,27 +75,25 @@ class FourierFaceCamera:
         Side Effects:
             カメラ入力、画面表示、仮想カメラ出力を行う。
         """
-        ret, frame = self.cap.read()
+        ret, frame = read_frame(self.cap)
         if not ret:
             return
 
-        h, w, _ = frame.shape
-        fps = int(self.cap.get(cv2.CAP_PROP_FPS))
-        if fps == 0:
-            fps = settings.FALLBACK_FPS
+        width, height = get_frame_size(frame)
+        fps = get_capture_fps(self.cap)
 
-        print(f"[INFO] Starting virtual camera at {w}x{h} ({fps}fps)...")
+        print(f"[INFO] Starting virtual camera at {width}x{height} ({fps}fps)...")
         
-        with pyvirtualcam.Camera(width=w, height=h, fps=fps) as cam:
+        with create_virtual_camera(width=width, height=height, fps=fps) as cam:
             print("[INFO] Virtual camera active: OBS Virtual Camera")
             print("[INFO] Press 'q' on the monitor window to exit.")
 
             while True:
-                ret, frame = self.cap.read()
+                ret, frame = read_frame(self.cap)
                 if not ret:
                     break
 
-                display_frame = np.zeros((h, w, 3), dtype=np.uint8)
+                display_frame = np.zeros((height, width, 3), dtype=np.uint8)
 
                 category_mask = extract_category_mask(frame, self.segmenter)
                 person_mask = extract_person_mask(category_mask)
@@ -116,12 +119,9 @@ class FourierFaceCamera:
                     line_thickness=settings.INNER_LINE_THICKNESS,
                 )
 
-                out_frame_rgb = cv2.cvtColor(display_frame, cv2.COLOR_BGR2RGB)
-                cam.send(out_frame_rgb)
-                cam.sleep_until_next_frame()
+                send_frame(cam, display_frame)
 
-                cv2.imshow("Fourier Face Camera (Monitor)", display_frame)
-                if cv2.waitKey(1) & 0xFF == ord('q'):
+                if show_monitor_window(display_frame):
                     break
 
         self.cleanup()
@@ -139,9 +139,9 @@ class FourierFaceCamera:
         Side Effects:
             外部リソースを解放する。
         """
-        self.cap.release()
+        release_camera(self.cap)
         self.segmenter.close()
-        cv2.destroyAllWindows()
+        destroy_monitor_windows()
         print("[INFO] Camera released and windows destroyed.")
 
 if __name__ == "__main__":
